@@ -1,10 +1,14 @@
-<?php
+<?php declare(strict_types=1);
 
-namespace Budabot\User\Modules;
+namespace Nadybot\User\Modules\WIKI_MODULE;
 
 use StdClass;
 use JsonException;
-use Budabot\Core\CommandReply;
+use Nadybot\Core\CommandReply;
+use Nadybot\Core\Http;
+use Nadybot\Core\HttpResponse;
+use Nadybot\Core\Nadybot;
+use Nadybot\Core\Text;
 
 /**
  * Authors:
@@ -25,42 +29,22 @@ class WikiController {
 	/**
 	 * Name of the module.
 	 * Set automatically by module loader.
-	 * @var string $moduleName
 	 */
-	public $moduleName;
+	public string $moduleName;
 
-	/**
-	 * @var \Budabot\Core\Budabot $chatBot
-	 * @Inject
-	 */
-	public $chatBot;
+	/** @Inject */
+	public Http $http;
 
-	/**
-	 * @var \Budabot\Core\Http $http
-	 * @Inject
-	 */
-	public $http;
-
-	/**
-	 * @var \Budabot\Core\Text $text
-	 * @Inject
-	 */
-	public $text;
+	/** @Inject */
+	public Text $text;
 
 	/**
 	 * Command to look up wiki entries
 	 *
-	 * @param string                     $message The full command received
-	 * @param string                     $channel Where did the command come from (tell, guild, priv)
-	 * @param string                     $sender  The name of the user issuing the command
-	 * @param \Budabot\Core\CommandReply $sendto  Object to use to reply to
-	 * @param string[]                   $args    The arguments to the dict-command
-	 * @return void
-	 *
 	 * @HandlesCommand("wiki")
 	 * @Matches("/^wiki\s+(.+)$/i")
 	 */
-	public function wikiCommand($message, $channel, $sender, $sendto, $args) {
+	public function wikiCommand(string $message, string $channel, string $sender, CommandReply $sendto, array $args): void {
 		$this->http
 			->get('https://en.wikipedia.org/w/api.php')
 			->withQueryParams([
@@ -73,19 +57,13 @@ class WikiController {
 				'titles' => str_replace("&#39;", "'", $args[1]),
 			])
 			->withTimeout(5)
-			->withCallback(function($response) use ($sendto) {
-				$this->handleExtractResponse($response, $sendto);
-			});
+			->withCallback([$this, "handleExtractResponse"], $sendto);
 	}
 
 	/**
 	 * Handle the response for a list of links origination from a page
-	 *
-	 * @param \StdClass                  $response The HTTP response object
-	 * @param \Budabot\Core\CommandReply $sendto   Object to send the reply to
-	 * @return void
 	 */
-	public function handleLinksResponse(StdClass $response, CommandReply $sendto): void {
+	public function handleLinksResponse(HttpResponse $response, CommandReply $sendto): void {
 		$page = $this->parseResponseIntoWikiPage($response, $sendto);
 		if ($page === null) {
 			return;
@@ -103,12 +81,8 @@ class WikiController {
 
 	/**
 	 * Handle the response for a wiki page
-	 *
-	 * @param \StdClass                  $response The HTTP response object
-	 * @param \Budabot\Core\CommandReply $sendto   Object to send the reply to
-	 * @return void
 	 */
-	public function handleExtractResponse(StdClass $response, CommandReply $sendto): void {
+	public function handleExtractResponse(HttpResponse $response, CommandReply $sendto): void {
 		$page = $this->parseResponseIntoWikiPage($response, $sendto);
 		if ($page === null) {
 			return;
@@ -129,9 +103,7 @@ class WikiController {
 					'titles' => $page->title,
 				])
 				->withTimeout(5)
-				->withCallback(function($response) use ($sendto) {
-					$this->handleLinksResponse($response, $sendto);
-				});
+				->withCallback([$this, "handleLinksResponse"], $sendto);
 			return;
 		}
 		$blob = $page->extract;
@@ -142,12 +114,8 @@ class WikiController {
 
 	/**
 	 * Parse the AsyncHttp reply into a WikiPage object or null on error
-	 *
-	 * @param \StdClass $response The reponse object from AsyncHttp
-	 * @param \Budabot\Core\CommandReply $sendto Where to send to all errors to
-	 * @return \Budabot\User\Modules\WikiPage|null The parsed wiki page or null on error
 	 */
-	protected function parseResponseIntoWikiPage(StdClass $response, CommandReply $sendto): ?WikiPage {
+	protected function parseResponseIntoWikiPage(HttpResponse $response, CommandReply $sendto): ?WikiPage {
 		if (isset($response->error)) {
 			$msg = "There was an error getting data from Wikipedia: ".
 				$response->error.
@@ -156,34 +124,21 @@ class WikiController {
 			return null;
 		}
 		try {
-			$wikiData = json_decode($response->body, true, 8, JSON_THROW_ON_ERROR);
+			$wikiData = json_decode($response->body, false, 8, JSON_THROW_ON_ERROR);
 		} catch (JsonException $e) {
 			$msg = "Unable to parse Wikipedia's reply.";
 			$sendto->reply($msg);
 			return null;
 		}
-		$pageID = array_keys($wikiData['query']['pages'])[0];
-		$page = $wikiData['query']['pages'][$pageID];
-		if ($pageID === "-1") {
-			$msg = "Couldn't find a Wikipedia entry for <highlight>" . $page['title'] . "<end>.";
+		$pageID = array_keys(get_object_vars($wikiData->query->pages))[0];
+		$page = $wikiData->query->pages->{$pageID};
+		if ($pageID === -1) {
+			$msg = "Couldn't find a Wikipedia entry for <highlight>{$page->title}<end>.";
 			$sendto->reply($msg);
 			return null;
 		}
 		$wikiPage = new WikiPage();
-		$wikiPage->title = $page['title'];
-		if (array_key_exists('links', $page)) {
-			$wikiPage->links = $page['links'];
-		}
-		if (array_key_exists('extract', $page)) {
-			$wikiPage->extract = $page['extract'];
-		}
+		$wikiPage->fromJSON($page);
 		return $wikiPage;
 	}
 }
-
-class WikiPage {
-	public $title;
-	public $extract;
-	public $links;
-}
-
